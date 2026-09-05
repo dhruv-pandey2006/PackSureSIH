@@ -7,13 +7,20 @@ import { Card } from '../components/common/Card';
 import { ComplianceScore } from '../components/common/ComplianceScore';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { ViolationCard } from '../components/common/ViolationCard';
-import { getScanResult } from '../services/api';
-import type { ScanResult } from '../services/mockData';
+import { getEvidenceImage, getScanResult, type EvidenceMetadata, type ScanResultWithEvidence } from '../services/api';
+
+type LoadedEvidence = EvidenceMetadata & {
+  imageUrl?: string;
+  error?: string;
+};
 
 export function ComplianceResultPage() {
   const navigate = useNavigate();
   const { id } = useParams();
-  const [result, setResult] = useState<ScanResult | null>(null);
+  const [result, setResult] = useState<ScanResultWithEvidence | null>(null);
+  const [loadedEvidence, setLoadedEvidence] = useState<LoadedEvidence[]>([]);
+  const [visibleOcr, setVisibleOcr] = useState<Record<number, boolean>>({});
+  const [imageDimensions, setImageDimensions] = useState<Record<number, { width: number; height: number }>>({});
 
   const { getToken } = useClerkAuth();
   const getTokenRef = useRef(getToken);
@@ -24,6 +31,44 @@ export function ComplianceResultPage() {
     getScanResult(resultId, getTokenRef.current).then(setResult);
   }, [id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const objectUrls: string[] = [];
+    const evidence = result?.evidence ?? [];
+
+    setLoadedEvidence(evidence);
+    setVisibleOcr({});
+    setImageDimensions({});
+
+    void Promise.all(
+      evidence.map(async (item) => {
+        try {
+          const blob = await getEvidenceImage(Number(id ?? 1), item.id, getTokenRef.current);
+
+          if (cancelled) {
+            return item;
+          }
+
+          const imageUrl = URL.createObjectURL(blob);
+          objectUrls.push(imageUrl);
+
+          return { ...item, imageUrl };
+        } catch {
+          return { ...item, error: 'This evidence image could not be loaded.' };
+        }
+      }),
+    ).then((items) => {
+      if (!cancelled) {
+        setLoadedEvidence(items);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl));
+    };
+  }, [id, result]);
+
   if (!result) {
     return <div className="mx-auto max-w-7xl px-4 py-12 text-slate-300">Loading results...</div>;
   }
@@ -31,6 +76,19 @@ export function ComplianceResultPage() {
   const totalChecks = result.complianceChecks?.length ?? 0;
   const passedChecks = result.complianceChecks?.filter((check) => check.status === 'PASS').length ?? 0;
   const reviewChecks = result.complianceChecks?.filter((check) => check.status !== 'PASS') ?? [];
+
+  const manufactureDateCheck = result.complianceChecks?.find((check) => check.field === 'Manufacture Date');
+  const bestBeforeCheck = result.complianceChecks?.find((check) => check.field === 'Best Before / Use Before');
+
+  const verifiedDeclarations = [
+    ...result.declarations,
+    ...(manufactureDateCheck
+      ? [{ label: 'Manufacturing Date', passed: manufactureDateCheck.status === 'PASS', note: manufactureDateCheck.message }]
+      : []),
+    ...(bestBeforeCheck
+      ? [{ label: 'Best Before', passed: bestBeforeCheck.status === 'PASS', note: bestBeforeCheck.message }]
+      : []),
+  ];
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
@@ -100,7 +158,7 @@ export function ComplianceResultPage() {
           <div className="mt-6">
             <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">Verified Declarations</div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {result.declarations.length > 0 ? result.declarations.map((item) => (
+              {verifiedDeclarations.length > 0 ? verifiedDeclarations.map((item) => (
                 <div key={item.label} className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{item.label}</div>
@@ -156,11 +214,103 @@ export function ComplianceResultPage() {
           <Card className="p-6">
             <div className="mb-4 text-xl font-semibold text-white">Evidence</div>
             <div className="space-y-4">
-              {result.imageUrl ? (
-                <img src={result.imageUrl} alt={result.productName} className="h-52 w-full rounded-2xl object-cover border border-slate-700" />
+              {loadedEvidence.length > 0 ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {loadedEvidence.map((item) => (
+                    <div key={item.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                      {item.imageUrl ? (
+                        <>
+                          <a href={item.imageUrl} target="_blank" rel="noreferrer" className="block">
+                            <div className="relative overflow-hidden rounded-lg border border-slate-700 bg-slate-950">
+                              <img
+                                src={item.imageUrl}
+                                alt={`Evidence image ${item.imageIndex}`}
+                                className="block h-auto w-full"
+                                onLoad={(event) => {
+                                  const image = event.currentTarget;
+                                  setImageDimensions((current) => ({
+                                    ...current,
+                                    [item.id]: { width: image.naturalWidth, height: image.naturalHeight },
+                                  }));
+                                }}
+                              />
+                              {visibleOcr[item.id] && item.ocrBoxes && imageDimensions[item.id] ? (
+                                <svg
+                                  aria-hidden="true"
+                                  className="pointer-events-none absolute inset-0 h-full w-full"
+                                  viewBox={`0 0 ${imageDimensions[item.id].width} ${imageDimensions[item.id].height}`}
+                                  preserveAspectRatio="none"
+                                >
+                                  {item.ocrBoxes.words.map((box) => (
+                                    <rect
+                                      key={`${box.lineIndex}-${box.wordIndex}-${box.left}-${box.top}`}
+                                      x={box.left}
+                                      y={box.top}
+                                      width={box.width}
+                                      height={box.height}
+                                      fill="rgba(34, 211, 238, 0.18)"
+                                      stroke="#22d3ee"
+                                      strokeWidth={Math.max(imageDimensions[item.id].width / 500, 1)}
+                                    />
+                                  ))}
+                                </svg>
+                              ) : null}
+                            </div>
+                          </a>
+                          {item.ocrBoxes?.words.length ? (
+                            <button
+                              type="button"
+                              className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300 hover:text-cyan-200"
+                              onClick={() => setVisibleOcr((current) => ({ ...current, [item.id]: !current[item.id] }))}
+                            >
+                              {visibleOcr[item.id] ? 'Hide OCR regions' : 'Show OCR regions'}
+                            </button>
+                          ) : null}
+                          {item.readability ? (
+                            <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-xs text-slate-300">
+                              <div className="mb-2 font-semibold uppercase tracking-[0.16em] text-slate-400">Readability screening</div>
+                              <div className={[
+                                'font-semibold',
+                                item.readability.status === 'PASS'
+                                  ? 'text-emerald-300'
+                                  : item.readability.status === 'WARNING'
+                                    ? 'text-amber-300'
+                                    : 'text-slate-300',
+                              ].join(' ')}>
+                                {item.readability.status === 'PASS'
+                                  ? 'PASS'
+                                  : item.readability.status === 'WARNING'
+                                    ? 'WARNING'
+                                    : 'MANUAL REVIEW'}
+                              </div>
+                              <div className="mt-1 leading-5">{item.readability.reason}</div>
+                              {item.readability.wordCount > 0 ? (
+                                <div className="mt-2 grid grid-cols-2 gap-2 text-slate-400">
+                                  <span>Detected words: <strong className="text-slate-200">{item.readability.wordCount}</strong></span>
+                                  <span>Median height: <strong className="text-slate-200">{item.readability.medianWordHeightPx?.toFixed(1)} px</strong></span>
+                                  {item.readability.imageHeight ? (
+                                    <span>Relative height: <strong className="text-slate-200">{((item.readability.medianWordHeightPx ?? 0) / item.readability.imageHeight * 100).toFixed(2)}%</strong></span>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <div className="flex h-44 items-center justify-center rounded-lg border border-dashed border-slate-700 text-center text-sm text-slate-400">
+                          {item.error ?? 'Loading evidence image...'}
+                        </div>
+                      )}
+                      <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                        <span className="text-cyan-300">Image {item.imageIndex}</span>
+                        <span className="truncate text-right text-slate-300" title={item.originalFilename}>{item.originalFilename}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               ) : (
-                <div className="flex h-52 items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-950/70 text-sm text-slate-400">
-                  No image attached to this report.
+                <div className="flex h-32 items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-950/70 text-center text-sm text-slate-400">
+                  No photographic evidence attached to this scan.
                 </div>
               )}
               <div className="grid gap-3 text-sm text-slate-300 sm:grid-cols-3">
@@ -191,7 +341,10 @@ export function ComplianceResultPage() {
 
           <Card className="p-6">
             <div className="mb-5 flex items-center justify-between">
-              <div className="text-xl font-semibold text-white">All Compliance Checks</div>
+              <div>
+                <div className="text-xl font-semibold text-white">All Compliance Checks</div>
+                {result.ruleSetVersion ? <div className="mt-1 text-xs text-slate-500">PackSure screening rule set v{result.ruleSetVersion}</div> : null}
+              </div>
               {result.complianceChecks ? (
                 <div className="text-xs text-slate-400">{result.complianceChecks.length} checks</div>
               ) : null}
@@ -200,7 +353,10 @@ export function ComplianceResultPage() {
               {result.complianceChecks && result.complianceChecks.length > 0 ? result.complianceChecks.map((check) => (
                 <div key={check.field} className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{check.field}</div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{check.field}</div>
+                      {check.id ? <div className="mt-1 text-[10px] text-slate-500">{check.id}{check.name ? ` · ${check.name}` : ''}</div> : null}
+                    </div>
                     <div
                       className={[
                         'flex h-6 w-6 items-center justify-center rounded-full',
@@ -215,6 +371,7 @@ export function ComplianceResultPage() {
                     </div>
                   </div>
                   <div className="text-sm text-slate-300">{check.message}</div>
+                  {check.basis ? <div className="mt-2 text-[10px] text-slate-500">{check.basis}</div> : null}
                 </div>
               )) : <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3 text-sm text-slate-300">Detailed compliance checks are not available for this result.</div>}
             </div>

@@ -43,7 +43,7 @@ export function Navbar() {
             { label: 'Home', to: '/' },
             { label: 'Dashboard', to: '/dashboard' },
             { label: 'Scan Product', to: '/scan-product' },
-            { label: 'My Products', to: '/my-products' },
+
             { label: 'History', to: '/history' },
             { label: 'Reports', to: '/reports' },
           ]

@@ -38,3 +38,6 @@ __pycache__/
 
 # Ignore accidental null file
 (null)
+
+# Local uploaded evidence storage
+backend/storage/

@@ -1,16 +1,45 @@
+import { useEffect, useState } from 'react';
 import { ArrowRight, FileText, ShieldAlert } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { useAuth as useClerkAuth } from '@clerk/react';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../components/common/Button';
 import { Card } from '../components/common/Card';
 import { StatusBadge } from '../components/common/StatusBadge';
-
-const reports = [
-  { id: 'REP-1042', title: 'Apex Protein Crunch', status: 'Compliant', date: '03 Sep 2026' },
-  { id: 'REP-1039', title: 'Harbor Rice 5kg', status: 'Non-Compliant', date: '31 Aug 2026' },
-  { id: 'REP-1031', title: 'GreenLeaf Tea', status: 'Needs Review', date: '27 Aug 2026' },
-];
+import { getReportHistory } from '../services/api';
+import type { ScanHistoryItem } from '../services/mockData';
 
 export function ReportsPage() {
+  const navigate = useNavigate();
+  const { getToken } = useClerkAuth();
+  const [reports, setReports] = useState<ScanHistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    setLoading(true);
+    setErrorMessage(null);
+
+    getReportHistory(getToken)
+      .then((items) => {
+        if (active) setReports(items);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setReports([]);
+          setErrorMessage(error instanceof Error ? error.message : 'Reports could not be loaded.');
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [getToken]);
+
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-12 sm:px-6 lg:px-8">
       <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -23,7 +52,20 @@ export function ReportsPage() {
         </Link>
       </div>
 
-      <div className="grid gap-6">
+      {loading ? <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-6 text-sm text-slate-400">Loading reports...</div> : null}
+
+      {!loading && errorMessage ? (
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-6 text-sm text-red-200">{errorMessage}</div>
+      ) : null}
+
+      {!loading && !errorMessage && reports.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 p-8 text-center">
+          <div className="text-lg font-semibold text-white">No reports yet</div>
+          <div className="mt-2 text-sm text-slate-400">Scan a product to generate your first compliance report.</div>
+        </div>
+      ) : null}
+
+      {!loading && !errorMessage && reports.length > 0 ? <div className="grid gap-6">
         {reports.map((report) => (
           <Card key={report.id} className="p-5">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -32,19 +74,19 @@ export function ReportsPage() {
                   {report.status === 'Non-Compliant' ? <ShieldAlert className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
                 </div>
                 <div>
-                  <div className="text-lg font-semibold text-white">{report.title}</div>
-                  <div className="text-sm text-slate-400">{report.id} • {report.date}</div>
+                  <div className="text-lg font-semibold text-white">{report.product}</div>
+                  <div className="text-sm text-slate-400">Scan #{report.id} • {report.date} • Score {report.score}</div>
                 </div>
               </div>
 
               <div className="flex items-center gap-3">
                 <StatusBadge status={report.status} />
-                <Button variant="secondary">Open</Button>
+                <Button variant="secondary" onClick={() => navigate(`/report/${report.id}`)}>Open</Button>
               </div>
             </div>
           </Card>
         ))}
-      </div>
+      </div> : null}
     </div>
   );
 }

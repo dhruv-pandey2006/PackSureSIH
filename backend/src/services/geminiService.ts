@@ -89,9 +89,12 @@ FIELD-SPECIFIC INSTRUCTIONS:
   explicitly stated on the package. Do not confuse the brand name with the
   common/generic name.
 
-- unitSalePrice: Extract the unit sale price when it is explicitly printed,
-  such as a price per ml, per litre, per gram, or per kilogram. Preserve the
-  printed unit and value. If no unit sale price is present, return null.
+- unitSalePrice: Extract the unit sale price ONLY when it is explicitly
+  associated with a label such as "Unit Sale Price" or "Unit Sale Price
+  per unit", such as a price per ml, per litre, per gram, or per kilogram.
+  Do not use the MRP or any other price for this field. Preserve the
+  printed unit and value. If no value is explicitly labeled as a unit sale
+  price, return null.
 
 - manufacturer: Extract the company or person explicitly identified as the
   manufacturer of the packaged commodity.
@@ -109,15 +112,19 @@ FIELD-SPECIFIC INSTRUCTIONS:
 
 - netQuantity: Extract the declared net quantity exactly as printed.
 
-- mrp: Extract the maximum retail price exactly as printed. Preserve the
-  currency symbol or text exactly as it appears in the OCR input (for
-  example ₹, Rs, or INR). Never substitute one currency symbol for another,
-  never convert or normalize currencies, and never turn ₹, Rs, or INR into $
-  or any other currency symbol. Retain the numeric value exactly as
-  represented in the OCR text. If the currency symbol is unclear or
-  ambiguous in the OCR text, do not invent or guess a different currency
-  symbol. Do not confuse the MRP with batch numbers, article numbers, phone
-  numbers, or unit prices.
+- mrp: Extract the maximum retail price ONLY when it is explicitly
+  associated with a label such as "MRP", "M.R.P", "Maximum Retail Price",
+  or "Max. Retail Price". Preserve the currency symbol or text exactly as
+  it appears in the OCR input (for example ₹, Rs, or INR). Never substitute
+  one currency symbol for another, never convert or normalize currencies,
+  and never turn ₹, Rs, or INR into $ or any other currency symbol. Retain
+  the numeric value exactly as represented in the OCR text. If the currency
+  symbol is unclear or ambiguous in the OCR text, do not invent or guess a
+  different currency symbol. Do not confuse the MRP with batch numbers,
+  article numbers, phone numbers, or unit prices. NEVER copy the Unit Sale
+  Price, or any other nearby price, into the MRP field. If the MRP value is
+  not clearly visible or legible in the OCR text, return null rather than
+  substituting a different nearby price.
 
 - batchNumber: Extract only the batch or lot identifier itself. Return only
   the value immediately associated with "Batch No.", "Batch", "Lot No.", or

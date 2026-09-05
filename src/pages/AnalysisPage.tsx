@@ -18,7 +18,7 @@ const stageFlow = [
 export function AnalysisPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const payload = (location.state as { file?: File | null; demoProductId?: string; fileName?: string; imageUrl?: string | null } | null) ?? {};
+  const payload = (location.state as { files?: File[]; file?: File | null; demoProductId?: string; fileName?: string; imageUrl?: string | null } | null) ?? {};
   const analysisStartedRef = useRef(false);
 
   const { getToken } = useClerkAuth();

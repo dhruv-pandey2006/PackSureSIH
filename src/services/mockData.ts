@@ -20,6 +20,11 @@ export type ComplianceCheckItem = {
   field: string;
   status: 'PASS' | 'WARNING' | 'FAIL';
   message: string;
+  id?: string;
+  name?: string;
+  description?: string;
+  severity?: 'ERROR' | 'REVIEW';
+  basis?: string;
 };
 
 export type ScanResult = {
@@ -50,6 +55,7 @@ export type ScanResult = {
   issues: Issue[];
   declarations: Array<{ label: string; passed: boolean; note: string }>;
   complianceChecks?: ComplianceCheckItem[];
+  ruleSetVersion?: string;
 };
 
 export type ScanHistoryItem = {

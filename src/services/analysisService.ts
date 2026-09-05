@@ -10,6 +10,43 @@ export type PendingAnalysis = {
   fileType?: string;
 };
 
+type OcrEvidenceMetadata = {
+  imageIndex: number;
+  filename: string;
+  text: string;
+  imageWidth: number | null;
+  imageHeight: number | null;
+  ocrBoxes: {
+    version: 1;
+    coordinateSpace: 'image-pixels';
+    words: Array<{
+      text: string;
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+      lineIndex: number;
+      wordIndex: number;
+    }>;
+  } | null;
+};
+
+async function getImageDimensions(file: File): Promise<{ imageWidth: number; imageHeight: number } | null> {
+  if (typeof createImageBitmap !== 'function') return null;
+
+  try {
+    const bitmap = await createImageBitmap(file);
+
+    try {
+      return { imageWidth: bitmap.width, imageHeight: bitmap.height };
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
 const PENDING_KEY = 'packsure:pending-analysis';
 
 function nextResultId() {
@@ -23,12 +60,18 @@ function createReportFromProduct(
   source: 'upload' | 'demo',
   fileName?: string,
   backendCompliance?: {
+  ruleSetVersion?: string;
   score: number;
   overallStatus: 'PASS' | 'WARNING' | 'FAIL';
   checks: Array<{
     field: string;
     status: 'PASS' | 'WARNING' | 'FAIL';
     message: string;
+    id?: string;
+    name?: string;
+    description?: string;
+    severity?: 'ERROR' | 'REVIEW';
+    basis?: string;
   }>;
 },
 ): ScanResult {
@@ -160,8 +203,14 @@ function createReportFromProduct(
         field: check.field,
         status: check.status,
         message: check.message,
+        id: check.id,
+        name: check.name,
+        description: check.description,
+        severity: check.severity,
+        basis: check.basis,
       }),
     ),
+    ruleSetVersion: backendCompliance?.ruleSetVersion,
   };
 
   return result;
@@ -183,9 +232,13 @@ export function loadPendingAnalysis(): PendingAnalysis | null {
 export function clearPendingAnalysis() {
   localStorage.removeItem(PENDING_KEY);
 }
-async function analyzeUploadedFile(file: File) {
+async function analyzeUploadedFile(files: File[]) {
+  if (files.length === 0) {
+    throw new Error('At least one image is required to analyze a product.');
+  }
+
   const formData = new FormData();
-  formData.append('file', file);
+  files.forEach((file) => formData.append('file', file));
 
   const response = await fetch('http://localhost:4000/api/ocr', {
     method: 'POST',
@@ -220,18 +273,34 @@ async function analyzeUploadedFile(file: File) {
     sourceLabel: 'backend-ocr',
   };
 
+  const rawOcrEvidence = Array.isArray(data.ocrEvidence)
+    ? (data.ocrEvidence as Omit<OcrEvidenceMetadata, 'imageWidth' | 'imageHeight'>[])
+    : [];
+  const ocrEvidence = await Promise.all(
+    rawOcrEvidence.map(async (item, index) => {
+      const dimensions = await getImageDimensions(files[index]);
+
+      return {
+        ...item,
+        imageWidth: dimensions?.imageWidth ?? null,
+        imageHeight: dimensions?.imageHeight ?? null,
+      };
+    }),
+  );
+
   return {
     productData,
     compliance: data.compliance,
+    ocrEvidence,
   };
 }
 async function persistScanToBackend(
   result: ScanResult,
   getToken?: () => Promise<string | null>,
-): Promise<void> {
+): Promise<number | null> {
   if (!getToken) {
     console.warn('Skipping backend scan save: no Clerk token getter available (user likely signed out).');
-    return;
+    return null;
   }
 
   try {
@@ -239,7 +308,7 @@ async function persistScanToBackend(
 
     if (!token) {
       console.warn('Skipping backend scan save: no Clerk session token available (user is signed out).');
-      return;
+      return null;
     }
 
     const response = await fetch('http://localhost:4000/api/scans', {
@@ -254,20 +323,84 @@ async function persistScanToBackend(
     if (!response.ok) {
       const error = await response.json().catch(() => null);
       console.error('Failed to save scan to backend:', error?.error || response.statusText);
+      return null;
     }
+
+    const data = await response.json().catch(() => null);
+    const rawId = data?.scan?.id;
+
+    // Postgres returns bigint ("id") columns as strings via node-postgres,
+    // unlike integer columns, so a valid id can arrive as "43" rather than 43.
+    const backendId =
+      typeof rawId === 'number' ? rawId : typeof rawId === 'string' ? Number(rawId) : NaN;
+
+    if (!Number.isInteger(backendId)) {
+      console.error('Backend scan save succeeded but did not return a valid scan id.');
+      return null;
+    }
+
+    return backendId;
   } catch (error) {
     console.error('Failed to save scan to backend:', error);
+    return null;
+  }
+}
+
+async function uploadScanEvidence(
+  scanId: number,
+  files: File[],
+  ocrEvidence: OcrEvidenceMetadata[],
+  getToken?: () => Promise<string | null>,
+) {
+  if (files.length === 0 || !getToken) return;
+
+  try {
+    const token = await getToken();
+
+    if (!token) {
+      console.warn('Skipping evidence upload: no Clerk session token available.');
+      return;
+    }
+
+    const formData = new FormData();
+    files.forEach((file) => formData.append('file', file));
+    formData.append('ocrEvidence', JSON.stringify(ocrEvidence));
+
+    const response = await fetch(`http://localhost:4000/api/scans/${scanId}/evidence`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      console.warn('Evidence upload failed; scan report was preserved:', error?.error || response.statusText);
+    }
+  } catch (error) {
+    console.warn('Evidence upload failed; scan report was preserved:', error);
   }
 }
 
 export async function analyzeProduct(
-  payload: { file?: File | null; demoProductId?: string; fileName?: string; imageUrl?: string | null } = {},
+  payload: {
+    files?: File[];
+    // Legacy single-file shape, still sent by ScanProductPage.tsx today.
+    // Kept so a one-image scan continues to work exactly as before.
+    file?: File | null;
+    demoProductId?: string;
+    fileName?: string;
+    imageUrl?: string | null;
+  } = {},
   getToken?: () => Promise<string | null>,
 ): Promise<ScanResult> {
   const id = nextResultId();
 
   let productData: ProductExtraction;
-let backendCompliance;
+  let backendCompliance;
+  let ocrEvidence: OcrEvidenceMetadata[] = [];
+  const files = payload.files && payload.files.length > 0 ? payload.files : payload.file ? [payload.file] : [];
   let source: 'upload' | 'demo' = 'upload';
 
   if (payload.demoProductId) {
@@ -292,13 +425,14 @@ let backendCompliance;
     });
     source = 'demo';
   } else {
-    if (payload.file) {
-  const backendResult = await analyzeUploadedFile(payload.file);
-  productData = backendResult.productData;
-  backendCompliance = backendResult.compliance;
-} else {
-  productData = extractProductData(null);
-}
+    if (files.length > 0) {
+      const backendResult = await analyzeUploadedFile(files);
+      productData = backendResult.productData;
+      backendCompliance = backendResult.compliance;
+      ocrEvidence = backendResult.ocrEvidence;
+    } else {
+      productData = extractProductData(null);
+    }
   }
 
   const result = createReportFromProduct(
@@ -308,9 +442,18 @@ let backendCompliance;
   payload.fileName || productData.productName,
   backendCompliance,
 );
-  result.imageUrl = payload.imageUrl ?? null;
+  // Blob URLs (from URL.createObjectURL in ScanProductPage) are only valid
+  // for the current browser session and must never be persisted — they
+  // cannot be resolved later from localStorage or the backend.
+  result.imageUrl = payload.imageUrl && !payload.imageUrl.startsWith('blob:') ? payload.imageUrl : null;
+
+  const backendId = await persistScanToBackend(result, getToken);
+  if (backendId !== null) {
+    result.id = backendId;
+    await uploadScanEvidence(result.id, files, ocrEvidence, getToken);
+  }
+
   saveStoredReport(result);
-  await persistScanToBackend(result, getToken);
   clearPendingAnalysis();
   return result;
 }
